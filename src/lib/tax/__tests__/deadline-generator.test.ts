@@ -34,6 +34,7 @@ const SETTINGS: CompanySettingsForDeadlines = {
   punktskatt_enabled: false,
   fyllnadsinbetalning_enabled: false,
   tax_assessment_notices: [],
+  first_fiscal_year_end: null,
 }
 
 // Current + next year (the generator's own default): with the rolling
@@ -681,5 +682,58 @@ describe('shouldRegenerateTaxDeadlines', () => {
   it('does not regenerate when nothing changed and deadlines already exist', () => {
     // Avoid clobbering existing status/progress on unrelated settings saves.
     expect(shouldRegenerateTaxDeadlines(false, 12)).toBe(false)
+  })
+})
+
+describe('a first räkenskapsår longer than twelve months', () => {
+  // Registered 2026-08-17, first räkenskapsår extended to 2027-12-31: there
+  // is no räkenskapsår 2026, so none of its year-end obligations exist.
+  const LONG_FIRST_YEAR: CompanySettingsForDeadlines = {
+    ...SETTINGS,
+    moms_period: 'yearly',
+    pays_salaries: false,
+    vat_has_eu_trade: true,
+    first_fiscal_year_end: '2027-12-31',
+  }
+  const YEAR_END_TYPES = ['arsstamma', 'inkomstdeklaration_ab', 'arsredovisning', 'moms_yearly']
+
+  it('expects no year-end obligation for the nonexistent räkenskapsår 2026', () => {
+    const keys = getExpectedUpcomingDeadlineKeys(LONG_FIRST_YEAR, [2026, 2027], new Date(2026, 9, 11))
+    const forYear2026 = Array.from(keys).filter((key) =>
+      YEAR_END_TYPES.some((type) => key.startsWith(`${type}:2026:`)),
+    )
+    expect(forYear2026).toEqual([])
+  })
+
+  it('still expects them without a recorded first fiscal year (unchanged behaviour)', () => {
+    const keys = getExpectedUpcomingDeadlineKeys(
+      { ...LONG_FIRST_YEAR, first_fiscal_year_end: null },
+      [2026, 2027],
+      new Date(2026, 9, 11),
+    )
+    expect(keys.has('arsstamma:2026:2027-06-30')).toBe(true)
+  })
+
+  it('expects the first räkenskapsår 2027 obligations on their statutory dates', () => {
+    const keys = getExpectedUpcomingDeadlineKeys(LONG_FIRST_YEAR, [2028], new Date(2027, 11, 1))
+    // 26 February 2028 is a Saturday: next banking day.
+    expect(keys.has('moms_yearly:2027:2028-02-28')).toBe(true)
+    expect(keys.has('arsstamma:2027:2028-06-30')).toBe(true)
+    expect(keys.has('arsredovisning:2027:2028-07-31')).toBe(true)
+  })
+
+  it('does not flag the company once the generated rows exist (no nightly loop)', () => {
+    const fromDate = new Date(2026, 9, 11)
+    const rows = Array.from(getExpectedUpcomingDeadlineKeys(LONG_FIRST_YEAR, [2026, 2027], fromDate))
+      .map((key, i) => {
+        const [type, period, dueDate] = key.split(':')
+        return {
+          id: `r${i}`, company_id: 'c1', tax_deadline_type: type, tax_period: period,
+          due_date: dueDate, is_completed: false, dismissed_at: null,
+        }
+      })
+    const settingsRow = { ...LONG_FIRST_YEAR, company_id: 'c1' }
+    expect(findSettingsMissingUpcomingDeadlines([settingsRow], rows, [2026, 2027], fromDate))
+      .toEqual([])
   })
 })

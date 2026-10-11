@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { TAX_DEADLINE_CONFIGS } from '../deadline-config'
+import { TAX_DEADLINE_CONFIGS, precedesFirstFiscalYear } from '../deadline-config'
 import type { CompanySettingsForDeadlines } from '../deadline-config'
 
 function getConfig(type: string) {
@@ -635,5 +635,37 @@ describe('ekonomisk förening: juridisk person deadlines with the association wo
     expect(yearly.generateDates(2027, ekf({ moms_period: 'yearly', vat_filing_method: 'paper' }))[0]).toMatchObject(
       yearly.generateDates(2027, makeSettings({ entity_type: 'aktiebolag', moms_period: 'yearly', vat_filing_method: 'paper' }))[0],
     )
+  })
+})
+
+describe('precedesFirstFiscalYear', () => {
+  const longFirstYear = makeSettings({ first_fiscal_year_end: '2027-12-31' })
+
+  it('drops year-end obligations of a räkenskapsår before the first one', () => {
+    expect(precedesFirstFiscalYear('arsstamma', '2026', longFirstYear)).toBe(true)
+    expect(precedesFirstFiscalYear('moms_yearly', '2026', longFirstYear)).toBe(true)
+    expect(precedesFirstFiscalYear('fyllnadsinbetalning', '2026-rest', longFirstYear)).toBe(true)
+  })
+
+  it('keeps the first räkenskapsår and later ones', () => {
+    expect(precedesFirstFiscalYear('arsstamma', '2027', longFirstYear)).toBe(false)
+    expect(precedesFirstFiscalYear('inkomstdeklaration_ab', '2028', longFirstYear)).toBe(false)
+  })
+
+  it('reads the end year of a broken räkenskapsår label', () => {
+    // Räkenskapsår May-April; first one ends 2027-04-30.
+    const broken = makeSettings({ fiscal_year_start_month: 5, first_fiscal_year_end: '2027-04-30' })
+    expect(precedesFirstFiscalYear('arsredovisning', '2025/2026', broken)).toBe(true)
+    expect(precedesFirstFiscalYear('arsredovisning', '2026/2027', broken)).toBe(false)
+  })
+
+  it('never touches recurring or calendar-year obligations', () => {
+    expect(precedesFirstFiscalYear('moms_quarterly', '2026-Q2', longFirstYear)).toBe(false)
+    expect(precedesFirstFiscalYear('kontrolluppgifter', '2026', longFirstYear)).toBe(false)
+  })
+
+  it('is a no-op without a recorded first fiscal year', () => {
+    expect(precedesFirstFiscalYear('arsstamma', '2026', makeSettings())).toBe(false)
+    expect(precedesFirstFiscalYear('arsstamma', '2026', makeSettings({ first_fiscal_year_end: null }))).toBe(false)
   })
 })

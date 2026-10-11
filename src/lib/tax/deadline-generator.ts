@@ -125,6 +125,7 @@ export function toDeadlineSettings(
     punktskatt_enabled: settings.punktskatt_enabled ?? false,
     fyllnadsinbetalning_enabled: settings.fyllnadsinbetalning_enabled ?? false,
     tax_assessment_notices: settings.tax_assessment_notices,
+    first_fiscal_year_end: settings.first_fiscal_year_end,
   }
 }
 
@@ -163,6 +164,41 @@ function toDeadlineNotice(row: TaxAssessmentNoticeRow): TaxAssessmentNoticeForDe
     decisionType: row.decision_type,
     paymentDueDate: row.payment_due_date,
   }
+}
+
+/**
+ * End date of the earliest fiscal period per company (see
+ * CompanySettingsForDeadlines.first_fiscal_year_end). One query for every
+ * company when companyId is omitted (cron paths), paginated like the rest.
+ */
+async function fetchFirstFiscalYearEnds(
+  supabase: SupabaseClient,
+  companyId?: string,
+): Promise<Map<string, string>> {
+  const rows = await fetchAllRows<{ company_id: string; period_end: string }>(({ from, to }) => {
+    let query = supabase
+      .from('fiscal_periods')
+      .select('company_id, period_end')
+    if (companyId) query = query.eq('company_id', companyId)
+    return query.order('id', { ascending: true }).range(from, to)
+  })
+  const firstEnds = new Map<string, string>()
+  for (const row of rows) {
+    const current = firstEnds.get(row.company_id)
+    if (!current || row.period_end < current) firstEnds.set(row.company_id, row.period_end)
+  }
+  return firstEnds
+}
+
+async function hydrateFirstFiscalYearEnds(
+  supabase: SupabaseClient,
+  settingsRows: DeadlineSettingsRow[],
+): Promise<DeadlineSettingsRow[]> {
+  const firstEnds = await fetchFirstFiscalYearEnds(supabase)
+  return settingsRows.map((settings) => ({
+    ...settings,
+    first_fiscal_year_end: firstEnds.get(settings.company_id) ?? null,
+  }))
 }
 
 async function hydrateTaxAssessmentNotices(
@@ -279,6 +315,11 @@ export async function generateTaxDeadlinesForUser(
       ...settings,
       tax_assessment_notices: notices.map(toDeadlineNotice),
     }
+  }
+
+  if (settings.first_fiscal_year_end === undefined) {
+    const firstEnds = await fetchFirstFiscalYearEnds(supabase, companyId)
+    settings = { ...settings, first_fiscal_year_end: firstEnds.get(companyId) ?? null }
   }
 
   // Recurring deadlines use the current rolling window. Explicit tax notices
@@ -739,9 +780,9 @@ export async function generateNewYearDeadlines(
   supabase: SupabaseClient
 ): Promise<{ usersProcessed: number; totalCreated: number }> {
   const newYear = new Date().getFullYear()
-  const allSettings = await hydrateTaxAssessmentNotices(
+  const allSettings = await hydrateFirstFiscalYearEnds(
     supabase,
-    await fetchAllDeadlineSettings(supabase),
+    await hydrateTaxAssessmentNotices(supabase, await fetchAllDeadlineSettings(supabase)),
   )
 
   let usersProcessed = 0
@@ -791,7 +832,10 @@ export async function backfillMissingTaxDeadlines(
         .range(from, to),
     ),
   ])
-  const allSettings = await hydrateTaxAssessmentNotices(supabase, rawSettings)
+  const allSettings = await hydrateFirstFiscalYearEnds(
+    supabase,
+    await hydrateTaxAssessmentNotices(supabase, rawSettings),
+  )
 
   const missingSettings = findSettingsMissingUpcomingDeadlines(allSettings, upcomingDeadlineRows)
   let companiesRepaired = 0

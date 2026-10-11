@@ -53,6 +53,16 @@ export interface CompanySettingsForDeadlines {
   rot_rut_payment_years?: number[]
   /** Derived from active tax_assessment_notices rows by the generator. */
   tax_assessment_notices?: TaxAssessmentNoticeForDeadline[]
+  /**
+   * Derived, NOT a company_settings column: the end date (YYYY-MM-DD) of the
+   * company's earliest fiscal_periods row. A new company's first räkenskapsår
+   * is often longer or shorter than twelve months (BFL 3 kap. 3 §: up to 18
+   * months), and no räkenskapsår ends before it, so annual obligations keyed
+   * on an earlier year end do not exist. null = no fiscal period recorded,
+   * undefined = not resolved (the generator resolves it); both leave the
+   * schedule unfiltered.
+   */
+  first_fiscal_year_end?: string | null
 }
 
 // Configuration for a single tax deadline type
@@ -969,8 +979,61 @@ function getMonthLabel(month: number, year: number): string {
 /**
  * Get all applicable deadline configs for given company settings
  */
+/**
+ * Obligations that belong to one räkenskapsår and whose period label is that
+ * year's label (`YYYY` or `YYYY-1/YYYY`, optionally with a `-suffix`).
+ */
+const FISCAL_YEAR_BOUND_TYPES: ReadonlySet<TaxDeadlineType> = new Set<TaxDeadlineType>([
+  'moms_yearly',
+  'fyllnadsinbetalning',
+  'inkomstdeklaration_ab',
+  'arsredovisning',
+  'arsstamma',
+  'inkomstdeklaration_ekonomisk_forening',
+  'arsredovisning_ekonomisk_forening',
+  'foreningsstamma',
+])
+
+/**
+ * True when a fiscal-year-bound instance belongs to a räkenskapsår that ends
+ * before the company's first one, i.e. a year the company never had.
+ * Example: a company registered 2026-08-17 with a first räkenskapsår to
+ * 2027-12-31 has no räkenskapsår 2026, so no årsstämma, INK2, årsredovisning
+ * or helårsmoms for 2026.
+ */
+export function precedesFirstFiscalYear(
+  type: TaxDeadlineType,
+  period: string,
+  settings: CompanySettingsForDeadlines,
+): boolean {
+  const firstEnd = settings.first_fiscal_year_end
+  if (!firstEnd || !FISCAL_YEAR_BOUND_TYPES.has(type)) return false
+  const first = /^(\d{4})-(\d{2})-\d{2}$/.exec(firstEnd)
+  const label = /^(\d{4})(?:\/(\d{4}))?(?:-|$)/.exec(period)
+  const endMonth = fiscalYearEndMonthFor(settings)
+  if (!first || !label || endMonth === null) return false
+  const endYear = Number(label[2] ?? label[1])
+  return endYear * 12 + endMonth < Number(first[1]) * 12 + Number(first[2])
+}
+
 export function getApplicableDeadlineConfigs(
   settings: CompanySettingsForDeadlines
 ): TaxDeadlineConfig[] {
-  return TAX_DEADLINE_CONFIGS.filter((config) => config.condition(settings))
+  return TAX_DEADLINE_CONFIGS
+    .filter((config) => config.condition(settings))
+    .map((config) => {
+      // Applied here, the single source both the generator and the backfill
+      // detection read: if only one side dropped the nonexistent years, the
+      // nightly repair would regenerate the company forever.
+      if (!settings.first_fiscal_year_end || !FISCAL_YEAR_BOUND_TYPES.has(config.type)) {
+        return config
+      }
+      return {
+        ...config,
+        generateDates: (year: number, s: CompanySettingsForDeadlines) =>
+          config.generateDates(year, s).filter(
+            (instance) => !precedesFirstFiscalYear(config.type, instance.period, s),
+          ),
+      }
+    })
 }
