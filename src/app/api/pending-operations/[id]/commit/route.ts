@@ -10,8 +10,17 @@ ensureInitialized()
 
 export const POST = withRouteContext<{ params: Promise<{ id: string }> }>(
   'pending_operation.commit',
-  async (_request, { supabase, user, companyId, log }, { params }) => {
+  async (request, { supabase, user, companyId, log }, { params }) => {
     const { id } = await params
+    // Optional body { as_draft: true }: approve a create_voucher op into an
+    // editable, unnumbered draft instead of posting it. No body = post as before.
+    let asDraft = false
+    try {
+      const body = (await request.json()) as { as_draft?: unknown } | null
+      asDraft = body?.as_draft === true
+    } catch {
+      // empty or non-JSON body: plain approval
+    }
 
     const { data: op, error: fetchError } = await supabase
       .from('pending_operations')
@@ -33,6 +42,7 @@ export const POST = withRouteContext<{ params: Promise<{ id: string }> }>(
         {
           userEmail: user.email,
           commitMethod: 'user_accept',
+          asDraft,
           actor: { type: 'user', ...(user.email ? { label: user.email } : {}) },
         }
       )

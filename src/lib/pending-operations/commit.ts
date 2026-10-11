@@ -68,7 +68,7 @@ import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { buildInvoiceMatchClearingLines } from '@/lib/bookkeeping/invoice-payment-lines'
 import { booksInvoicesOnIssue, cashPartialBlockReason, creditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
 import { ensureManualCashAccount } from '@/lib/cash-accounts/service'
-import { createJournalEntry, findFiscalPeriod, getSwedishLocalDate, reverseEntry, validateBalance } from '@/lib/bookkeeping/engine'
+import { createDraftEntry, createJournalEntry, findFiscalPeriod, getSwedishLocalDate, reverseEntry, validateBalance } from '@/lib/bookkeeping/engine'
 import {
   canApproveSupplierInvoice,
   resolveUnsettledStatus,
@@ -335,6 +335,14 @@ export interface CommitOptions {
    * Omitted → NULL attribution, identical to pre-attribution behaviour.
    */
   actor?: CommitActor
+  /**
+   * Approve into a DRAFT verifikat instead of posting it (create_voucher only).
+   * The draft has no voucher number, stays editable under Bokföring › Utkast
+   * and is posted from there, so the reviewer can adjust date, text or lines
+   * before anything reaches the immutable layer. Other operation types refuse
+   * it before the claim, so the op stays pending.
+   */
+  asDraft?: boolean
 }
 
 // ensureFiscalPeriod moved to lib/transactions/categorize-core.ts (imported
@@ -5491,20 +5499,42 @@ async function commitCreateVoucher(
     sourceType = 'opening_balance'
   }
 
+  const entryInput = {
+    fiscal_period_id: fiscalPeriodId,
+    entry_date: entryDate,
+    description,
+    source_type: sourceType,
+    voucher_series: (params.voucher_series as string) || undefined,
+    notes: (params.notes as string) || undefined,
+    lines,
+  }
+
+  if (opts.asDraft) {
+    // Review-first approval: the verifikat lands as an unnumbered draft that
+    // the user edits and posts from the Utkast view. No voucher number is
+    // drawn, so discarding the draft leaves no gap (BFL 5 kap. 7§). Inbox-
+    // linked ops are refused upstream, so there is nothing to link here.
+    try {
+      const draft = await createDraftEntry(supabase, companyId, userId, entryInput)
+      return {
+        data: {
+          journal_entry_id: draft.id,
+          status: 'draft',
+          voucher_series: draft.voucher_series,
+          fiscal_period_id: fiscalPeriodId,
+        },
+      }
+    } catch (err) {
+      return failUnlessBookkeepingError(err, 'Failed to create draft voucher', 500)
+    }
+  }
+
   try {
     const entry = await createJournalEntry(
       supabase,
       companyId,
       userId,
-      {
-        fiscal_period_id: fiscalPeriodId,
-        entry_date: entryDate,
-        description,
-        source_type: sourceType,
-        voucher_series: (params.voucher_series as string) || undefined,
-        notes: (params.notes as string) || undefined,
-        lines,
-      },
+      entryInput,
       // commit_method records HOW it was committed, not who staged it.
       // Web routes pass 'user_accept'/'bulk_accept'; the MCP approve path
       // passes 'api_key'/'agent' so agent-relayed acknowledgments are
@@ -7196,6 +7226,26 @@ async function commitPendingOperationInner(
   //    the same reason as the gates below: a refused op must stay 'pending'
   //    (not consumed), so it is still there when the fix decides what to do
   //    with it. The staging door reads the same switch.
+  if (opts.asDraft) {
+    if (pendingOp.operation_type !== 'create_voucher') {
+      return {
+        status: 'failed',
+        error: 'Endast verifikationsförslag kan godkännas som utkast.',
+        http_status: 400,
+        operation_status: 'pending',
+      }
+    }
+    if (pendingOp.params?.inbox_item_id) {
+      return {
+        status: 'failed',
+        error:
+          'Förslaget är kopplat till ett dokument i inkorgen och kan inte godkännas som utkast. Godkänn det direkt eller avvisa det.',
+        http_status: 409,
+        operation_status: 'pending',
+      }
+    }
+  }
+
   if (
     pendingOp.operation_type === 'post_kontantmetod_cutoff' &&
     isKontantmetodCutoffSuspended()
