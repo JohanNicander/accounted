@@ -111,7 +111,7 @@ function getPeriodStatus(op: PendingOperation): PeriodStatusShape | null {
 // The tint is sanctioned here by the concept spec: approve reads sage,
 // reject terracotta. Details has no pill: the whole row opens them.
 const GACT_CLASS =
-  'inline-flex items-center gap-1.5 rounded-full border px-3.5 py-[5px] text-xs transition-colors duration-150 disabled:pointer-events-none disabled:opacity-50'
+  'inline-flex items-center gap-1.5 rounded-full border px-3.5 py-[5px] text-xs pointer-coarse:min-h-10 transition-colors duration-150 disabled:pointer-events-none disabled:opacity-50'
 const GACT_OK_CLASS = 'border-success/40 text-success hover:bg-success/10'
 const SORT_ORDER_STORAGE_KEY = 'pending.sortOrder'
 const GACT_NO_CLASS = 'border-destructive/40 text-destructive hover:bg-destructive/10'

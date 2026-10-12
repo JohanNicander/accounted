@@ -5405,7 +5405,8 @@ async function commitCreateVoucher(
   userId: string,
   companyId: string,
   params: Record<string, unknown>,
-  opts: CommitOptions = {}
+  opts: CommitOptions = {},
+  pendingOperationId?: string
 ): Promise<ExecutorResult> {
   const entryDate = params.entry_date as string
   const description = params.description as string
@@ -5514,8 +5515,15 @@ async function commitCreateVoucher(
     // the user edits and posts from the Utkast view. No voucher number is
     // drawn, so discarding the draft leaves no gap (BFL 5 kap. 7§). Inbox-
     // linked ops are refused upstream, so there is nothing to link here.
+    // source_id records the pending operation the draft came from: if the
+    // terminal 'committed' write fails after this insert, the stuck-committing
+    // sweep finds the draft through it and finalizes the op as committed
+    // instead of rejecting it while the draft exists (findPostedEvidence).
     try {
-      const draft = await createDraftEntry(supabase, companyId, userId, entryInput)
+      const draft = await createDraftEntry(supabase, companyId, userId, {
+        ...entryInput,
+        ...(pendingOperationId ? { source_id: pendingOperationId } : {}),
+      })
       return {
         data: {
           journal_entry_id: draft.id,
@@ -7494,7 +7502,7 @@ async function commitPendingOperationInner(
         result = await commitUndoSieImport(supabase, userId, companyId, pendingOp.params)
         break
       case 'create_voucher':
-        result = await commitCreateVoucher(supabase, userId, companyId, pendingOp.params, opts)
+        result = await commitCreateVoucher(supabase, userId, companyId, pendingOp.params, opts, pendingOp.id)
         break
       case 'correct_entry':
         result = await commitCorrectEntry(supabase, userId, companyId, pendingOp.params)

@@ -78,14 +78,43 @@ describe('POST /api/pending-operations/:id/commit: as_draft', () => {
     expect(mockCommit.mock.calls[0][4]).toMatchObject({ asDraft: false })
   })
 
-  it('keeps the plain approval unless as_draft is literally true', async () => {
-    enqueue({ data: op, error: null })
-    const request = createMockRequest('/api/pending-operations/op-1/commit', {
-      method: 'POST',
-      body: { as_draft: 'true' },
-    })
-    await POST(request, routeParams)
+  it('keeps the plain approval for as_draft: false and for a body without the field', async () => {
+    for (const body of [{ as_draft: false }, { note: 'x' }]) {
+      enqueue({ data: op, error: null })
+      const request = createMockRequest('/api/pending-operations/op-1/commit', {
+        method: 'POST',
+        body,
+      })
+      await POST(request, routeParams)
+    }
     expect(mockCommit.mock.calls[0][4]).toMatchObject({ asDraft: false })
+    expect(mockCommit.mock.calls[1][4]).toMatchObject({ asDraft: false })
+  })
+
+  it('returns 400 and posts nothing when the body is malformed JSON', async () => {
+    const request = new Request('http://localhost:3000/api/pending-operations/op-1/commit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"as_draft": true',
+    })
+    const { status, body } = await parseJsonResponse<{ error: { code: string } }>(
+      await POST(request, routeParams)
+    )
+    expect(status).toBe(400)
+    expect(body.error.code).toBe('VALIDATION_ERROR')
+    expect(mockCommit).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 and posts nothing when as_draft is not a boolean', async () => {
+    for (const body of [{ as_draft: 'true' }, [true]]) {
+      const request = createMockRequest('/api/pending-operations/op-1/commit', {
+        method: 'POST',
+        body,
+      })
+      const { status } = await parseJsonResponse(await POST(request, routeParams))
+      expect(status).toBe(400)
+    }
+    expect(mockCommit).not.toHaveBeenCalled()
   })
 
   it('returns the executor refusal unchanged (inbox-linked proposal stays pending)', async () => {

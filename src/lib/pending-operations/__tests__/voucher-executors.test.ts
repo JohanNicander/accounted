@@ -746,7 +746,7 @@ describe('commitPendingOperation: create_voucher', () => {
       supabase as never,
       'user-1',
       'company-1',
-      makePendingOp({ params: draftParams }),
+      makePendingOp({ id: 'op-1', params: draftParams }),
       { asDraft: true }
     )
 
@@ -758,7 +758,14 @@ describe('commitPendingOperation: create_voucher', () => {
       expect.anything(),
       'company-1',
       'user-1',
-      expect.objectContaining({ entry_date: '2026-08-17', source_type: 'manual', fiscal_period_id: 'fp-1' })
+      // source_id links the draft to its op so the stuck-committing sweep can
+      // recover a failed finalize as committed (recover-stuck-committing.ts).
+      expect.objectContaining({
+        entry_date: '2026-08-17',
+        source_type: 'manual',
+        fiscal_period_id: 'fp-1',
+        source_id: 'op-1',
+      })
     )
   })
 
